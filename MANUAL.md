@@ -153,12 +153,107 @@ Two layers:
 
 - **Chat history** — the last `memory.max_recent_turns` turns go into the
   prompt automatically. Clear it from Jarvis → Clear chat history.
-- **Long-term facts** — Jarvis decides what's worth remembering, or you can
-  tell it: "remember that I prefer brevity over politeness." Ask "what do
-  you remember about X?" to query; "forget that I…" to remove.
+- **Long-term facts** — typed key/value entries grouped by `kind`
+  (`identity`, `preference`, `routine`, `project`, `note`, …). Stored in
+  `~/.local/share/jarvis/memory.db` (SQLite, FTS5).
 
-Facts are kept in `~/.local/share/jarvis/memory.db` (SQLite, FTS5). The full
-fact list is summarised into every system prompt up to ~1200 chars.
+#### Pinned vs. indexed (the important part)
+
+Dumping every fact into every prompt wastes tokens and gets worse as memory
+grows. Jarvis uses a two-tier model:
+
+- **Pinned facts** appear in every system prompt with their full value. This
+  is reserved for things the assistant needs *every turn* — your name, how
+  you like to be addressed, persistent preferences. Should be a handful.
+- **Indexed facts** are listed by `kind: key1, key2, …` only. The values
+  are not sent. The assistant fetches them on demand with
+  `read_memory(kind, key)` when relevant.
+
+What this means in practice:
+
+```
+# Memory
+You have 47 long-term facts (4 pinned). ...
+
+## Pinned (always available)
+- [identity] name: Alon
+- [preference] address_style: sir
+- [preference] brevity: terse
+- [identity] employer: MyCorp
+
+## Index (fetch with `read_memory` when relevant)
+identity: name, employer, manager, team
+preference: address_style, brevity, voice_provider, mr_review_style
+project: jarvis, dashboard, infra_migration
+routine: standup, lunch_check, end_of_day
+note: vacation_aug, neighbor_dog_name, ssh_alias_for_jumphost
+```
+
+The model sees that `note.neighbor_dog_name` exists; if you ask "what's my
+neighbor's dog called?" it calls `read_memory(kind="note", key="neighbor_dog_name")`
+and reads just that one fact.
+
+#### What to pin
+
+Pin when **either** is true:
+
+- The fact's relevance is **constant** — every reply should reflect it
+  (your name, address style, persona preferences).
+- The fact is **so frequently needed** that the round-trip cost of fetching
+  is worse than the prompt cost of including it (e.g. your timezone if
+  most questions are time-sensitive).
+
+For anything situational ("the IP of my dev VPN", "the slug of last
+quarter's design doc"), leave it unpinned. The model finds it via the index.
+
+#### Asking Jarvis to manage memory
+
+```
+You: remember that my standup is at 9:45 every weekday
+Jarvis: Noted, sir. [calls remember(kind="routine", key="standup",
+        value="9:45 every weekday")]
+
+You: pin that I prefer terse responses
+Jarvis: [calls remember(... pinned=true) or pin_memory(...)]
+
+You: what do you remember about my projects?
+Jarvis: [sees `project: jarvis, dashboard, infra_migration` in index,
+        calls read_memory(kind="project") to fetch all values]
+
+You: forget the dashboard project
+Jarvis: [calls forget(kind="project", key="dashboard")]
+```
+
+#### Does this work with `claude -p`?
+
+Yes. The memory injection happens at the **assistant** level, before any
+LLM call. The system prompt with pinned + index is built from SQLite and
+passed to whichever backend you've configured. `claude -p` sees the exact
+same prompt as the OpenAI-compatible backend would — backend choice doesn't
+change memory behaviour.
+
+(One subtle thing: `claude -p` is stateless per invocation, but so is every
+LLM API call. The illusion of memory is built by re-injecting the system
+prompt and recent turns on every call. Jarvis handles that for you.)
+
+#### Memory tools (built in)
+
+| Tool | What it does |
+|---|---|
+| `remember(kind, key, value, pinned=false)` | Upsert a fact; preserves existing pinned state if not set |
+| `pin_memory(kind, key, pinned=true)` | Pin or unpin an existing fact |
+| `read_memory(kind?, key?)` | Exact fetch. Both args → one fact. `kind` only → all of that kind. Neither → the index |
+| `recall(query, limit=8)` | Fuzzy FTS search across all facts |
+| `forget(kind?, key?)` | Remove facts. No args = wipe all |
+
+#### When the model should *not* dump memory on you
+
+Built into the prompt: "DO NOT ask the user about something already in
+memory." If you've told Jarvis your timezone once, it should never ask
+again. If it does, that's a description / prompt bug — either the kind/key
+naming is too obscure for the model to find it in the index, or the fact
+was stored under a name the model wouldn't guess. Rename it (`forget` +
+`remember` under a better key).
 
 ### Settings
 

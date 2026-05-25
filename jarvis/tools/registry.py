@@ -60,9 +60,15 @@ class ToolRegistry:
     # touch core internals like memory + config).
     # ------------------------------------------------------------------
     def _register_builtins(self) -> None:
-        def remember(assistant, *, kind: str, key: str, value: str):
-            assistant.memory.remember(kind=kind, key=key, value=value, source="assistant")
-            return {"ok": True}
+        def remember(assistant, *, kind: str, key: str, value: str, pinned: bool = False):
+            assistant.memory.remember(
+                kind=kind, key=key, value=value, source="assistant", pinned=pinned,
+            )
+            return {"ok": True, "pinned": pinned}
+
+        def pin_memory(assistant, *, kind: str, key: str, pinned: bool = True):
+            ok = assistant.memory.pin(kind, key, pinned)
+            return {"ok": ok}
 
         def forget(assistant, *, kind: str | None = None, key: str | None = None):
             n = assistant.memory.forget(kind=kind, key=key)
@@ -70,9 +76,27 @@ class ToolRegistry:
 
         def recall(assistant, *, query: str, limit: int = 8):
             return [
-                {"kind": f.kind, "key": f.key, "value": f.value}
+                {"kind": f.kind, "key": f.key, "value": f.value, "pinned": f.pinned}
                 for f in assistant.memory.search_facts(query, limit=limit)
             ]
+
+        def read_memory(assistant, *, kind: str | None = None, key: str | None = None):
+            """Exact fetch. If only `kind` given, returns every fact of that kind.
+            If both given, returns the single fact. If neither, returns the index."""
+            if kind and key:
+                f = assistant.memory.get_fact(kind, key)
+                if not f:
+                    return {"found": False, "kind": kind, "key": key}
+                return {"found": True, "kind": f.kind, "key": f.key,
+                        "value": f.value, "pinned": f.pinned}
+            if kind:
+                return [
+                    {"key": f.key, "value": f.value, "pinned": f.pinned}
+                    for f in assistant.memory.all_facts() if f.kind == kind
+                ]
+            # Neither — return the structural index.
+            return {"index": assistant.memory.index_summary(),
+                    "stats": assistant.memory.stats()}
 
         def set_config(assistant, *, key: str, value):
             assistant.config.set(key, value)
@@ -122,11 +146,28 @@ class ToolRegistry:
 
         # Wrap each as a Tool by attaching .  _jarvis_tool then registering.
         decls = [
-            (remember, "remember", "Store a long-term fact in memory.",
-             {"kind": {"type": "string"}, "key": {"type": "string"}, "value": {"type": "string"}}),
+            (remember, "remember",
+             "Store a long-term fact in memory. Set pinned=true ONLY for facts "
+             "that should appear in every prompt (user's name, address style, "
+             "always-on preferences). Everything else stays in the index and "
+             "is fetched on demand via read_memory.",
+             {"kind": {"type": "string",
+                       "description": "Category: identity | preference | routine | project | note | ..."},
+              "key": {"type": "string", "description": "Stable short slug, e.g. 'name', 'standup_time'."},
+              "value": {"type": "string"},
+              "pinned": {"type": "boolean", "default": False}}),
+            (pin_memory, "pin_memory",
+             "Pin or unpin an existing fact so it appears in every prompt.",
+             {"kind": {"type": "string"}, "key": {"type": "string"},
+              "pinned": {"type": "boolean", "default": True}}),
+            (read_memory, "read_memory",
+             "Fetch a specific fact by (kind, key), or all facts of a kind, "
+             "or the structural index. Prefer this over assuming memory contents.",
+             {"kind": {"type": "string", "default": None},
+              "key": {"type": "string", "default": None}}),
             (forget, "forget", "Forget facts by kind and/or key (omit both to wipe all).",
              {"kind": {"type": "string", "default": None}, "key": {"type": "string", "default": None}}),
-            (recall, "recall", "Search long-term memory.",
+            (recall, "recall", "Fuzzy keyword search over long-term memory.",
              {"query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}),
             (set_config, "set_config", "Set a config value by dotted key. Persists to disk.",
              {"key": {"type": "string"}, "value": {"type": "any"}}),

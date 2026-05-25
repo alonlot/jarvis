@@ -71,8 +71,12 @@ class Assistant:
     def _system_prompt(self) -> str:
         persona = self.config.get("persona.style", "")
         addr = self.config.get("persona.address_user_as", "sir")
-        facts = self.memory.facts_summary()
+        pinned = self.memory.pinned_summary()
+        index = self.memory.index_summary()
+        stats = self.memory.stats()
         tools_doc = self.tools.describe_for_prompt()
+
+        memory_section = self._render_memory_section(pinned, index, stats)
         return f"""{persona.strip()}
 
 The user prefers to be addressed as "{addr}".
@@ -93,9 +97,34 @@ When no tool is needed, just reply normally to the user.
 ## Available tools
 {tools_doc}
 
-# What you remember about the user (long-term memory)
-{facts or "(no long-term memory yet)"}
+{memory_section}
 """.strip()
+
+    @staticmethod
+    def _render_memory_section(pinned: str, index: str, stats: dict) -> str:
+        if not pinned and not index:
+            return (
+                "# Memory\n"
+                "You have no long-term memory yet. When you learn something worth keeping "
+                "(a preference, a name, a routine), call `remember(kind, key, value)`. "
+                "Pin it (`pinned=true`) only if it should appear in every prompt — e.g. "
+                "the user's name or how they like to be addressed."
+            )
+        parts = ["# Memory"]
+        parts.append(
+            f"You have {stats['total_facts']} long-term facts "
+            f"({stats['pinned_facts']} pinned). The pinned ones are shown in full below. "
+            f"For unpinned facts, the index lists keys grouped by kind — use "
+            f"`read_memory(kind, key)` to fetch a specific value or `recall(query)` "
+            f"for fuzzy search. DO NOT ask the user about something already in memory."
+        )
+        if pinned:
+            parts.append("\n## Pinned (always available)")
+            parts.append(pinned)
+        if index:
+            parts.append("\n## Index (fetch with `read_memory` when relevant)")
+            parts.append(index)
+        return "\n".join(parts)
 
     # -----------------------------------------------------------------------
     # Chat

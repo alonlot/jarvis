@@ -33,6 +33,7 @@ class Fact:
     value: str
     source: str = "user"
     ts: float = 0.0
+    pinned: bool = False
 
 
 SCHEMA = """
@@ -80,7 +81,13 @@ class Memory:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(facts)").fetchall()]
+        if "pinned" not in cols:
+            self.conn.execute("ALTER TABLE facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
     # --- turns --------------------------------------------------------------
     def add_turn(self, role: str, content: str, meta: dict | None = None) -> None:
@@ -105,15 +112,29 @@ class Memory:
         self.conn.commit()
 
     # --- facts --------------------------------------------------------------
-    def remember(self, kind: str, key: str, value: str, source: str = "user") -> None:
-        # Upsert-on-key within kind.
+    def remember(self, kind: str, key: str, value: str,
+                 source: str = "user", pinned: bool = False) -> None:
+        # Upsert-on-key within kind. Preserves pinned state if not specified.
+        existing = self.conn.execute(
+            "SELECT pinned FROM facts WHERE kind=? AND key=?", (kind, key)
+        ).fetchone()
+        if existing and pinned is False:
+            pinned = bool(existing[0])
         self.conn.execute("DELETE FROM facts WHERE kind=? AND key=?", (kind, key))
         self.conn.execute(
-            "INSERT INTO facts(ts, kind, key, value, source) VALUES(?,?,?,?,?)",
-            (time.time(), kind, key, value, source),
+            "INSERT INTO facts(ts, kind, key, value, source, pinned) VALUES(?,?,?,?,?,?)",
+            (time.time(), kind, key, value, source, 1 if pinned else 0),
         )
         self.conn.commit()
-        log.info("Remembered %s/%s = %s", kind, key, value[:80])
+        log.info("Remembered %s/%s = %s%s", kind, key, value[:80], " (pinned)" if pinned else "")
+
+    def pin(self, kind: str, key: str, pinned: bool = True) -> bool:
+        cur = self.conn.execute(
+            "UPDATE facts SET pinned=? WHERE kind=? AND key=?",
+            (1 if pinned else 0, kind, key),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def forget(self, kind: str | None = None, key: str | None = None) -> int:
         if kind and key:
@@ -127,14 +148,33 @@ class Memory:
 
     def all_facts(self) -> list[Fact]:
         rows = self.conn.execute(
-            "SELECT ts, kind, key, value, source FROM facts ORDER BY kind, key"
+            "SELECT ts, kind, key, value, source, pinned FROM facts ORDER BY kind, key"
         ).fetchall()
-        return [Fact(ts=ts, kind=k, key=key, value=v, source=s) for ts, k, key, v, s in rows]
+        return [Fact(ts=ts, kind=k, key=key, value=v, source=s, pinned=bool(p))
+                for ts, k, key, v, s, p in rows]
+
+    def pinned_facts(self) -> list[Fact]:
+        rows = self.conn.execute(
+            "SELECT ts, kind, key, value, source, pinned FROM facts "
+            "WHERE pinned=1 ORDER BY kind, key"
+        ).fetchall()
+        return [Fact(ts=ts, kind=k, key=key, value=v, source=s, pinned=True)
+                for ts, k, key, v, s, _p in rows]
+
+    def get_fact(self, kind: str, key: str) -> Fact | None:
+        row = self.conn.execute(
+            "SELECT ts, kind, key, value, source, pinned FROM facts "
+            "WHERE kind=? AND key=?", (kind, key),
+        ).fetchone()
+        if not row:
+            return None
+        ts, k, key_, v, s, p = row
+        return Fact(ts=ts, kind=k, key=key_, value=v, source=s, pinned=bool(p))
 
     def search_facts(self, query: str, limit: int = 8) -> list[Fact]:
         try:
             rows = self.conn.execute(
-                """SELECT f.ts, f.kind, f.key, f.value, f.source
+                """SELECT f.ts, f.kind, f.key, f.value, f.source, f.pinned
                    FROM facts f JOIN facts_fts ON f.id = facts_fts.rowid
                    WHERE facts_fts MATCH ? LIMIT ?""",
                 (query, limit),
@@ -143,20 +183,45 @@ class Memory:
             # FTS query syntax can choke on punctuation. Fall back to LIKE.
             like = f"%{query}%"
             rows = self.conn.execute(
-                """SELECT ts, kind, key, value, source FROM facts
+                """SELECT ts, kind, key, value, source, pinned FROM facts
                    WHERE value LIKE ? OR key LIKE ? LIMIT ?""",
                 (like, like, limit),
             ).fetchall()
-        return [Fact(ts=ts, kind=k, key=key, value=v, source=s) for ts, k, key, v, s in rows]
+        return [Fact(ts=ts, kind=k, key=key, value=v, source=s, pinned=bool(p))
+                for ts, k, key, v, s, p in rows]
 
-    def facts_summary(self, max_chars: int = 1200) -> str:
-        """Compact bullet list of facts, suitable for the system prompt."""
+    # --- prompt rendering ---------------------------------------------------
+    def pinned_summary(self, max_chars: int = 800) -> str:
+        """Full content of pinned facts. Goes verbatim into the system prompt."""
         out: list[str] = []
         total = 0
-        for f in self.all_facts():
+        for f in self.pinned_facts():
             line = f"- [{f.kind}] {f.key}: {f.value}"
             if total + len(line) > max_chars:
+                out.append(f"- … ({len(self.pinned_facts()) - len(out)} more pinned, truncated)")
                 break
             out.append(line)
             total += len(line) + 1
         return "\n".join(out)
+
+    def index_summary(self) -> str:
+        """Compact map of unpinned facts: `kind: key1, key2, ...` per line.
+        Lets the model see what exists without spending tokens on every value.
+        """
+        groups: dict[str, list[str]] = {}
+        for f in self.all_facts():
+            if f.pinned:
+                continue
+            groups.setdefault(f.kind, []).append(f.key)
+        if not groups:
+            return ""
+        lines = []
+        for kind in sorted(groups):
+            keys = sorted(groups[kind])
+            lines.append(f"{kind}: {', '.join(keys)}")
+        return "\n".join(lines)
+
+    def stats(self) -> dict:
+        total = self.conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+        pinned = self.conn.execute("SELECT COUNT(*) FROM facts WHERE pinned=1").fetchone()[0]
+        return {"total_facts": total, "pinned_facts": pinned}
