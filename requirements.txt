@@ -1,0 +1,19 @@
+# Core
+PyQt6>=6.6
+PyYAML>=6.0
+APScheduler>=3.10
+requests>=2.31
+pydantic>=2.5
+
+# Voice (audio I/O is required; specific engines below are optional)
+sounddevice>=0.4
+numpy>=1.24
+
+# Optional: local TTS fallback
+pyttsx3>=2.90
+
+# Optional: local STT (heavy — comment out if using remote STT only)
+# faster-whisper>=1.0
+
+# Optional: wake-word engine (free, local). Pulls onnxruntime.
+# openwakeword>=0.6

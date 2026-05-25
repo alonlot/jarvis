@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local settings
+.claude/
+
+# Jarvis runtime artefacts (config + memory live under XDG dirs, but in case
+# someone runs with --config pointing here, don't commit secrets)
+config/config.yaml
+*.db
+logs/

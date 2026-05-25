@@ -1,0 +1,140 @@
+# Jarvis configuration. Lives at ~/.config/jarvis/config.yaml after install.
+# Everything here can also be changed at runtime via the Settings dialog
+# or by asking Jarvis ("set my LLM model to ...").
+
+persona:
+  name: "Jarvis"
+  address_user_as: "sir"
+  style: |
+    You are Jarvis, the AI assistant from Iron Man. You are formal, dry, and
+    quietly witty. You address the user as "sir" by default. You are concise.
+    You proactively flag risks but never lecture. When you don't know something,
+    you ask. When asked to do something destructive or irreversible you confirm
+    first.
+
+llm:
+  # backend: claude_cli | openai_compat
+  backend: claude_cli
+  claude_cli:
+    binary: claude
+    extra_args: []          # e.g. ["--model", "claude-opus-4-7"]
+    timeout_seconds: 600
+  openai_compat:
+    base_url: "https://api.openai.com/v1"
+    api_key: ""             # paste here or set env var below
+    api_key_env: OPENAI_API_KEY
+    model: "gpt-4o-mini"
+    temperature: 0.4
+
+# Agents are separate from the chat LLM: each agent is a one-shot spawn that
+# does real work (edits files, fixes CR comments, etc). Default to claude -p.
+agents:
+  backend: claude_cli       # claude_cli | openai_compat (same shape as llm)
+  claude_cli:
+    binary: claude
+    extra_args: ["--permission-mode", "acceptEdits"]
+    timeout_seconds: 1800
+  default_cwd: ~            # null = current dir; otherwise repo path
+
+tts:
+  enabled: true
+  # backend: local | remote | none
+  backend: local
+  local:
+    # pyttsx3 — system voices. Pick a voice name substring (e.g. "english").
+    voice_hint: ""
+    rate: 175
+    volume: 1.0
+  remote:
+    # Any HTTP TTS that accepts JSON {model, input, voice} and returns audio bytes.
+    # Works with OpenAI /v1/audio/speech, ElevenLabs (wrap), self-hosted, etc.
+    base_url: "https://api.openai.com/v1/audio/speech"
+    api_key: ""
+    api_key_env: OPENAI_API_KEY
+    model: "tts-1"
+    voice: "onyx"
+    format: "mp3"
+
+stt:
+  enabled: true
+  # backend: local | remote | none
+  backend: local
+  local:
+    # faster-whisper. Models: tiny, base, small, medium, large-v3.
+    model: "base.en"
+    device: "auto"          # auto | cpu | cuda
+  remote:
+    # OpenAI-compatible /v1/audio/transcriptions endpoint.
+    base_url: "https://api.openai.com/v1/audio/transcriptions"
+    api_key: ""
+    api_key_env: OPENAI_API_KEY
+    model: "whisper-1"
+
+voice_activation:
+  # mode: wake_word | push_to_talk | off
+  mode: push_to_talk
+  wake_word:
+    # openWakeWord built-in models include: alexa, hey_jarvis, hey_mycroft, ok_nabu
+    model: "hey_jarvis"
+    silence_timeout_seconds: 10
+    threshold: 0.5
+  push_to_talk:
+    # Global hotkey. PyQt6 captures it while Jarvis window/overlay is focused.
+    # For true global hotkey on Linux, see the README (pynput recipe).
+    hotkey: "ctrl+space"
+    silence_timeout_seconds: 10
+
+overlay:
+  enabled: true
+  size_px: 96
+  position: "bottom_right"  # top_left | top_right | bottom_left | bottom_right
+  margin_px: 24
+  click_to_talk: true       # click overlay = start listening
+
+memory:
+  # Stored in $XDG_DATA_HOME/jarvis/memory.db
+  max_recent_turns: 40
+  long_term_enabled: true
+  # Things Jarvis is allowed to remember without asking permission.
+  auto_remember:
+    - preferences
+    - routines
+    - identities
+
+git:
+  # Roots Jarvis will scan to understand your work. Add as many as you like.
+  scan_roots:
+    - ~/code
+    - ~/projects
+  # Hosts to check for merge/pull requests. Configure tokens via env vars.
+  hosts:
+    - kind: github
+      token_env: GITHUB_TOKEN
+    - kind: gitlab
+      base_url: "https://gitlab.com"
+      token_env: GITLAB_TOKEN
+
+routines:
+  # Cron-style scheduled prompts. Each fires as if you'd typed it to Jarvis.
+  # Examples — replace with your own. Use "ask" to make Jarvis pause for an answer.
+  - name: morning_briefing
+    cron: "0 8 * * 1-5"
+    prompt: |
+      Good morning. Give me my schedule for today and list every open merge
+      request of mine across all configured git hosts, grouped by repo, with
+      whether CR comments are resolved. For any MR with unresolved CR comments,
+      summarise the comments and ask me if you should spawn an agent to fix them.
+    ask_before_acting: true
+
+  - name: end_of_day
+    cron: "0 18 * * 1-5"
+    prompt: |
+      Summarise what I committed today across my repos and what's still open.
+
+paths:
+  # Override if you don't like the XDG defaults.
+  data_dir: ~              # null = $XDG_DATA_HOME/jarvis
+  log_dir: ~
+
+logging:
+  level: INFO
