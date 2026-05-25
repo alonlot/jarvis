@@ -1,5 +1,8 @@
 # Jarvis
 
+> **Looking for the how-to?** → **[MANUAL.md](MANUAL.md)** has run / use /
+> plugin tutorials with worked examples. This README is the design overview.
+
 A personal AI assistant for Linux, designed around the Iron Man Jarvis pattern:
 formal, voice-driven, and capable of actually doing work — not just answering
 questions. It chats, listens, talks, watches a clock for scheduled routines,
