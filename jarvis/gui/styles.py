@@ -17,41 +17,49 @@ QWidget#sidebar {
 }
 
 QLabel#brand {
-    color: #58a6ff;
-    font-size: 14pt;
-    font-weight: 600;
-    letter-spacing: 1px;
-    padding: 8px 0;
+    color: #c9d1d9;
+    font-size: 13pt;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    padding: 0;
 }
 
 QPushButton#navBtn {
     background-color: transparent;
     color: #8b949e;
     border: none;
-    border-left: 3px solid transparent;
-    padding: 12px 18px;
+    border-left: 2px solid transparent;
+    padding: 11px 22px;
     text-align: left;
     font-size: 11pt;
 }
 QPushButton#navBtn:hover {
-    background-color: #161b22;
     color: #c9d1d9;
 }
 QPushButton#navBtn:checked {
-    background-color: #161b22;
+    background-color: #0d1117;
     color: #58a6ff;
-    border-left: 3px solid #58a6ff;
-    font-weight: 600;
+    border-left: 2px solid #58a6ff;
 }
 
 QWidget#headerArea {
     background-color: #0d1117;
 }
 QLabel#stateLabel {
-    color: #8b949e;
+    color: #6e7681;
     font-size: 10pt;
-    letter-spacing: 2px;
-    text-transform: uppercase;
+    letter-spacing: 1.5px;
+}
+
+QLabel#emptyTitle {
+    color: #c9d1d9;
+    font-size: 16pt;
+    font-weight: 400;
+    letter-spacing: 0.3px;
+}
+QLabel#emptyHint {
+    color: #6e7681;
+    font-size: 10pt;
 }
 
 QScrollArea, QScrollArea > QWidget > QWidget {

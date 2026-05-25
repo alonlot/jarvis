@@ -66,9 +66,7 @@ class _Sidebar(QWidget):
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
 
-        for i, (label, _icon) in enumerate(
-            [("  Chat", "💬"), ("  Routines", "⏰"), ("  Settings", "⚙")]
-        ):
+        for i, label in enumerate(["Chat", "Routines", "Settings"]):
             btn = QPushButton(label)
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
@@ -128,7 +126,8 @@ class _ChatPanel(QWidget):
         v.addWidget(line)
 
         # ── Bubble chat ───────────────────────────────────────────────
-        self.chat = ChatView()
+        address = assistant.config.get("persona.address_user_as", "sir")
+        self.chat = ChatView(address=address)
         v.addWidget(self.chat, 1)
 
         # ── Input bar ─────────────────────────────────────────────────
@@ -226,9 +225,9 @@ class ChatWindow(QMainWindow):
         # Menu (kept for keyboard users).
         self._build_menu()
 
-        # Greet.
-        addr = assistant.config.get("persona.address_user_as", "sir")
-        self.chat_panel.chat.add_assistant(f"At your service, {addr}.")
+        # Don't render an opening greeting — the empty state already says
+        # "At your service, {addr}.". A greeting bubble on top of that
+        # would be a double-up.
 
     # ------------------------------------------------------------------
     def _build_menu(self) -> None:
@@ -289,16 +288,18 @@ class ChatWindow(QMainWindow):
 
     def _start_worker(self, text: str, pending_id: Optional[str]) -> None:
         self.chat_panel.set_busy(True)
+        self.chat_panel.chat.show_typing()
         self.statusBar().showMessage("Thinking…", 0)
         self._worker = ChatWorker(self.assistant, text, pending_id)
         self._worker.finished_with_reply.connect(self._on_reply_ready)
         self._worker.start()
 
     def _on_reply_ready(self, _reply: str) -> None:
+        self.chat_panel.chat.hide_typing()
         self.chat_panel.set_busy(False)
         self.statusBar().clearMessage()
 
     def _clear_history(self) -> None:
         self.assistant.memory.clear_turns()
         self.chat_panel.chat.clear()
-        self.chat_panel.chat.add_assistant("History cleared, sir.")
+        self.statusBar().showMessage("History cleared.", 2000)
