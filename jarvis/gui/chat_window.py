@@ -1,23 +1,23 @@
-"""Main Jarvis chat window."""
+"""Main Jarvis window: sidebar nav + chat / routines / settings panels."""
 from __future__ import annotations
 
-import threading
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLineEdit, QMainWindow, QMenu, QMenuBar, QPushButton,
-    QStatusBar, QTextEdit, QToolBar, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from ..core.assistant import Assistant
-from .routines_dialog import RoutinesDialog
-from .settings_dialog import SettingsDialog
+from .routines_panel import RoutinesPanel
+from .settings_panel import SettingsPanel
+from .widgets.arc_reactor import ArcReactorWidget
+from .widgets.chat_view import ChatView
 
 
 class ChatWorker(QThread):
-    """Runs assistant.chat() off the UI thread."""
     finished_with_reply = pyqtSignal(str)
 
     def __init__(self, assistant: Assistant, text: str, pending_id: Optional[str] = None):
@@ -34,11 +34,148 @@ class ChatWorker(QThread):
                 reply = self.assistant.chat(self.text)
         except Exception as e:                                 # noqa: BLE001
             reply = f"(error: {e})"
-        # Reply also fires on_assistant_message which the GUI bridge handles —
-        # we still emit here so the chat window can clear its busy state.
         self.finished_with_reply.emit(reply)
 
 
+# ---------------------------------------------------------------------------
+class _Sidebar(QWidget):
+    """Vertical nav rail."""
+
+    nav_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("sidebar")
+        self.setFixedWidth(180)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 16, 0, 16)
+        v.setSpacing(2)
+
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(18, 0, 18, 12)
+        self.brand_reactor = ArcReactorWidget(self, size=28)
+        brand_row.addWidget(self.brand_reactor)
+        brand = QLabel("JARVIS")
+        brand.setObjectName("brand")
+        brand_row.addWidget(brand)
+        brand_row.addStretch(1)
+        v.addLayout(brand_row)
+
+        self._buttons: list[QPushButton] = []
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+
+        for i, (label, _icon) in enumerate(
+            [("  Chat", "💬"), ("  Routines", "⏰"), ("  Settings", "⚙")]
+        ):
+            btn = QPushButton(label)
+            btn.setObjectName("navBtn")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _=False, idx=i: self.nav_changed.emit(idx))
+            self._group.addButton(btn, i)
+            self._buttons.append(btn)
+            v.addWidget(btn)
+
+        v.addStretch(1)
+
+        footer = QLabel("at your service, sir.")
+        footer.setStyleSheet("color: #484f58; padding: 12px 18px; font-size: 9pt;")
+        v.addWidget(footer)
+
+    def select(self, index: int) -> None:
+        if 0 <= index < len(self._buttons):
+            self._buttons[index].setChecked(True)
+
+
+# ---------------------------------------------------------------------------
+class _ChatPanel(QWidget):
+    """The chat view itself: big reactor at top + bubble chat + input bar."""
+
+    send_requested = pyqtSignal(str)
+    mic_requested = pyqtSignal()
+
+    def __init__(self, assistant: Assistant, parent=None):
+        super().__init__(parent)
+        self.assistant = assistant
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # ── Header with the embedded reactor + state label ────────────
+        header = QWidget()
+        header.setObjectName("headerArea")
+        hv = QVBoxLayout(header)
+        hv.setContentsMargins(0, 22, 0, 14)
+        hv.setSpacing(8)
+        hv.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self.reactor = ArcReactorWidget(self, size=120, clickable=True)
+        self.reactor.clicked.connect(self.mic_requested.emit)
+        hv.addWidget(self.reactor, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.state_label = QLabel("READY, SIR.")
+        self.state_label.setObjectName("stateLabel")
+        self.state_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        hv.addWidget(self.state_label)
+        v.addWidget(header)
+
+        # ── Divider ───────────────────────────────────────────────────
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("color: #21262d; background: #21262d; max-height: 1px;")
+        v.addWidget(line)
+
+        # ── Bubble chat ───────────────────────────────────────────────
+        self.chat = ChatView()
+        v.addWidget(self.chat, 1)
+
+        # ── Input bar ─────────────────────────────────────────────────
+        bar = QWidget()
+        bar.setStyleSheet("background: #010409; border-top: 1px solid #21262d;")
+        bh = QHBoxLayout(bar)
+        bh.setContentsMargins(16, 12, 16, 12)
+        bh.setSpacing(10)
+
+        self.input = QLineEdit()
+        self.input.setObjectName("chatInput")
+        self.input.setPlaceholderText("Speak freely, sir.")
+        self.input.returnPressed.connect(self._emit_send)
+        bh.addWidget(self.input, 1)
+
+        self.mic_btn = QPushButton("🎙")
+        self.mic_btn.setObjectName("micBtn")
+        self.mic_btn.setToolTip("Push-to-talk")
+        self.mic_btn.clicked.connect(self.mic_requested.emit)
+        bh.addWidget(self.mic_btn)
+
+        self.send_btn = QPushButton("Send")
+        self.send_btn.setObjectName("primary")
+        self.send_btn.clicked.connect(self._emit_send)
+        bh.addWidget(self.send_btn)
+        v.addWidget(bar)
+
+    # ------------------------------------------------------------------
+    def _emit_send(self) -> None:
+        text = self.input.text().strip()
+        if not text:
+            return
+        self.input.clear()
+        self.send_requested.emit(text)
+
+    def set_busy(self, busy: bool) -> None:
+        self.send_btn.setEnabled(not busy)
+        self.input.setEnabled(not busy)
+        if not busy:
+            self.input.setFocus()
+
+    def set_state(self, state: str) -> None:
+        self.reactor.set_state(state)
+        self.state_label.setText(self.reactor.state_label().upper())
+
+
+# ---------------------------------------------------------------------------
 class ChatWindow(QMainWindow):
     def __init__(self, assistant: Assistant, voice):
         super().__init__()
@@ -48,136 +185,120 @@ class ChatWindow(QMainWindow):
         self._worker: Optional[ChatWorker] = None
 
         self.setWindowTitle("Jarvis")
-        self.resize(720, 720)
+        self.resize(960, 740)
+        self.setMinimumSize(700, 560)
 
-        self._build_ui()
+        # Central layout: sidebar + stacked content.
+        central = QWidget()
+        central.setObjectName("mainCentral")
+        h = QHBoxLayout(central)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+
+        self.sidebar = _Sidebar()
+        h.addWidget(self.sidebar)
+
+        self.stack = QStackedWidget()
+        self.chat_panel = _ChatPanel(assistant)
+        self.routines_panel = RoutinesPanel(assistant)
+        self.settings_panel = SettingsPanel(assistant)
+        self.stack.addWidget(self.chat_panel)      # 0
+        self.stack.addWidget(self.routines_panel)  # 1
+        self.stack.addWidget(self.settings_panel)  # 2
+        h.addWidget(self.stack, 1)
+
+        self.setCentralWidget(central)
+        self.setStatusBar(QStatusBar())
+
+        # Signals.
+        self.sidebar.nav_changed.connect(self.stack.setCurrentIndex)
+        self.chat_panel.send_requested.connect(self._on_send)
+        self.chat_panel.mic_requested.connect(self._on_mic)
+
+        # Default to chat.
+        self.sidebar.select(0)
+        self.stack.setCurrentIndex(0)
+
+        # Push-to-talk hotkey (active anywhere in the window).
+        hotkey = self.assistant.config.get("voice_activation.push_to_talk.hotkey", "ctrl+space")
+        QShortcut(QKeySequence(hotkey), self, activated=self._on_mic)
+
+        # Menu (kept for keyboard users).
         self._build_menu()
 
         # Greet.
         addr = assistant.config.get("persona.address_user_as", "sir")
-        self.append_assistant(f"At your service, {addr}.")
+        self.chat_panel.chat.add_assistant(f"At your service, {addr}.")
 
     # ------------------------------------------------------------------
-    def _build_ui(self) -> None:
-        central = QWidget()
-        layout = QVBoxLayout(central)
-
-        self.transcript = QTextEdit()
-        self.transcript.setReadOnly(True)
-        self.transcript.setFont(QFont("Sans", 10))
-        layout.addWidget(self.transcript, 1)
-
-        input_row = QHBoxLayout()
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Speak freely, sir.")
-        self.input.returnPressed.connect(self._on_send)
-        input_row.addWidget(self.input, 1)
-
-        self.mic_btn = QPushButton("🎙")
-        self.mic_btn.setToolTip("Push-to-talk")
-        self.mic_btn.clicked.connect(self._on_mic)
-        input_row.addWidget(self.mic_btn)
-
-        self.send_btn = QPushButton("Send")
-        self.send_btn.clicked.connect(self._on_send)
-        input_row.addWidget(self.send_btn)
-
-        layout.addLayout(input_row)
-        self.setCentralWidget(central)
-        self.setStatusBar(QStatusBar())
-
-        # Push-to-talk hotkey.
-        hotkey = self.assistant.config.get("voice_activation.push_to_talk.hotkey", "ctrl+space")
-        QShortcut(QKeySequence(hotkey.replace("ctrl", "Ctrl").replace("+", "+")), self,
-                  activated=self._on_mic)
-
     def _build_menu(self) -> None:
-        mbar: QMenuBar = self.menuBar()
+        mbar = self.menuBar()
+        m = mbar.addMenu("&Jarvis")
 
-        file_menu: QMenu = mbar.addMenu("&Jarvis")
-        act_settings = QAction("Settings…", self)
-        act_settings.triggered.connect(self._open_settings)
-        file_menu.addAction(act_settings)
+        for label, idx in [("Chat", 0), ("Routines", 1), ("Settings", 2)]:
+            a = QAction(label, self)
+            a.triggered.connect(lambda _=False, i=idx: (self.sidebar.select(i), self.stack.setCurrentIndex(i)))
+            m.addAction(a)
 
-        act_routines = QAction("Routines…", self)
-        act_routines.triggered.connect(self._open_routines)
-        file_menu.addAction(act_routines)
+        m.addSeparator()
+        clr = QAction("Clear chat history", self)
+        clr.triggered.connect(self._clear_history)
+        m.addAction(clr)
 
-        file_menu.addSeparator()
-        act_clear = QAction("Clear chat history", self)
-        act_clear.triggered.connect(self._clear_history)
-        file_menu.addAction(act_clear)
-
-        file_menu.addSeparator()
-        act_quit = QAction("Quit", self)
-        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
-        act_quit.triggered.connect(self.close)
-        file_menu.addAction(act_quit)
+        m.addSeparator()
+        q = QAction("Quit", self)
+        q.setShortcut(QKeySequence.StandardKey.Quit)
+        q.triggered.connect(self.close)
+        m.addAction(q)
 
     # ------------------------------------------------------------------
-    def append_user(self, text: str) -> None:
-        self.transcript.append(f"<p><b>You:</b> {self._html_escape(text)}</p>")
-
+    # External-facing methods (called from app.py via signal bridge)
+    # ------------------------------------------------------------------
     def append_assistant(self, text: str) -> None:
-        self.transcript.append(f"<p><b>Jarvis:</b> {self._html_escape(text)}</p>")
-
-    @staticmethod
-    def _html_escape(s: str) -> str:
-        return (s.replace("&", "&amp;").replace("<", "&lt;")
-                 .replace(">", "&gt;").replace("\n", "<br>"))
-
-    # ------------------------------------------------------------------
-    def _on_send(self) -> None:
-        text = self.input.text().strip()
-        if not text:
-            return
-        self.input.clear()
-        self.append_user(text)
-        self._start_worker(text, self._pending_id)
-        self._pending_id = None
+        self.chat_panel.chat.add_assistant(text)
 
     def on_voice_text(self, text: str) -> None:
         if not text:
             return
-        self.append_user(text + "  (🎙)")
+        self.chat_panel.chat.add_user(text, voice=True)
+        # Jump to chat panel if user is mid-config.
+        self.sidebar.select(0)
+        self.stack.setCurrentIndex(0)
         self._start_worker(text, self._pending_id)
         self._pending_id = None
 
-    def on_question_asked(self, pending_id: str, question: str) -> None:
-        # Assistant has asked us something; next user message answers it.
+    def on_question_asked(self, pending_id: str, _question: str) -> None:
         self._pending_id = pending_id
         self.statusBar().showMessage("Awaiting your reply…", 0)
 
+    def set_state(self, state: str) -> None:
+        """Wired from the app.py bridge so the embedded reactor stays in sync."""
+        self.chat_panel.set_state(state)
+
+    # ------------------------------------------------------------------
+    def _on_send(self, text: str) -> None:
+        self.chat_panel.chat.add_user(text)
+        self.sidebar.select(0)
+        self.stack.setCurrentIndex(0)
+        self._start_worker(text, self._pending_id)
+        self._pending_id = None
+
+    def _on_mic(self) -> None:
+        self.voice.request_listen()
+        self.statusBar().showMessage("Listening…", 1500)
+
     def _start_worker(self, text: str, pending_id: Optional[str]) -> None:
-        self.send_btn.setEnabled(False)
-        self.input.setEnabled(False)
+        self.chat_panel.set_busy(True)
         self.statusBar().showMessage("Thinking…", 0)
         self._worker = ChatWorker(self.assistant, text, pending_id)
         self._worker.finished_with_reply.connect(self._on_reply_ready)
         self._worker.start()
 
     def _on_reply_ready(self, _reply: str) -> None:
-        # Actual rendering happens via on_assistant_message → bridge → append_assistant
-        # so we just clear the busy state here.
-        self.send_btn.setEnabled(True)
-        self.input.setEnabled(True)
-        self.input.setFocus()
+        self.chat_panel.set_busy(False)
         self.statusBar().clearMessage()
-
-    def _on_mic(self) -> None:
-        self.voice.request_listen()
-        self.statusBar().showMessage("Listening…", 1500)
-
-    # ------------------------------------------------------------------
-    def _open_settings(self) -> None:
-        dlg = SettingsDialog(self.assistant, self)
-        dlg.exec()
-
-    def _open_routines(self) -> None:
-        dlg = RoutinesDialog(self.assistant, self)
-        dlg.exec()
 
     def _clear_history(self) -> None:
         self.assistant.memory.clear_turns()
-        self.transcript.clear()
-        self.append_assistant("History cleared, sir.")
+        self.chat_panel.chat.clear()
+        self.chat_panel.chat.add_assistant("History cleared, sir.")

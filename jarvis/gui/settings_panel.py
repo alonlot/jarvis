@@ -1,11 +1,13 @@
-"""Settings dialog — LLM / agents / TTS / STT / voice activation / overlay."""
+"""Inline settings panel — tabs for every config section."""
 from __future__ import annotations
+
+from typing import Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QLabel, QLineEdit, QMessageBox, QSpinBox, QTabWidget, QVBoxLayout,
-    QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..core.assistant import Assistant
@@ -15,37 +17,46 @@ def _row(form: QFormLayout, label: str, widget: QWidget) -> None:
     form.addRow(label, widget)
 
 
-class SettingsDialog(QDialog):
+class SettingsPanel(QWidget):
     def __init__(self, assistant: Assistant, parent=None):
         super().__init__(parent)
         self.assistant = assistant
         self.cfg = assistant.config
+        self._bindings: list[tuple[str, Callable]] = []
 
-        self.setWindowTitle("Jarvis settings")
-        self.resize(620, 560)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 16, 24, 16)
+        outer.setSpacing(12)
+
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 18pt; font-weight: 600; color: #c9d1d9;")
+        outer.addWidget(title)
+
+        subtitle = QLabel("Persists to ~/.config/jarvis/config.yaml")
+        subtitle.setStyleSheet("color: #8b949e;")
+        outer.addWidget(subtitle)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_persona_tab(), "Persona")
-        self.tabs.addTab(self._build_llm_tab("llm", "Chat LLM"), "Chat LLM")
-        self.tabs.addTab(self._build_llm_tab("agents", "Agent backend"), "Agents")
+        self.tabs.addTab(self._build_llm_tab("llm"), "Chat LLM")
+        self.tabs.addTab(self._build_llm_tab("agents"), "Agents")
         self.tabs.addTab(self._build_tts_tab(), "TTS")
         self.tabs.addTab(self._build_stt_tab(), "STT")
         self.tabs.addTab(self._build_voice_tab(), "Voice activation")
         self.tabs.addTab(self._build_overlay_tab(), "Overlay")
         self.tabs.addTab(self._build_git_tab(), "Git")
+        outer.addWidget(self.tabs, 1)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-
-        v = QVBoxLayout(self)
-        v.addWidget(self.tabs, 1)
-        v.addWidget(buttons)
-
-        # Holds (dotted_key, getter_callable) so save loops are concise.
-        self._bindings: list[tuple[str, callable]] = []
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        reload_btn = QPushButton("Reload from disk")
+        reload_btn.clicked.connect(self._reload)
+        save_btn = QPushButton("Save changes")
+        save_btn.setObjectName("primary")
+        save_btn.clicked.connect(self._save)
+        btns.addWidget(reload_btn)
+        btns.addWidget(save_btn)
+        outer.addLayout(btns)
 
     # ------------------------------------------------------------------
     def _bind_text(self, dotted: str, w: QLineEdit) -> QLineEdit:
@@ -85,21 +96,24 @@ class SettingsDialog(QDialog):
         w = QWidget(); f = QFormLayout(w)
         _row(f, "Name", self._bind_text("persona.name", QLineEdit()))
         _row(f, "Address user as", self._bind_text("persona.address_user_as", QLineEdit()))
-        style = QLineEdit(); style.setPlaceholderText("(longer style is best edited in config.yaml)")
-        self._bind_text("persona.style", style)
-        _row(f, "Style hint", style)
+        style = QPlainTextEdit()
+        style.setPlainText(str(self.cfg.get("persona.style", "") or ""))
+        style.setMinimumHeight(160)
+        self._bindings.append(("persona.style", style.toPlainText))
+        f.addRow("Style", style)
         return w
 
-    def _build_llm_tab(self, section: str, _title: str) -> QWidget:
+    def _build_llm_tab(self, section: str) -> QWidget:
         w = QWidget(); v = QVBoxLayout(w)
 
-        backend_box = QGroupBox("Backend")
-        bf = QFormLayout(backend_box)
-        _row(bf, "Backend", self._bind_combo(f"{section}.backend", QComboBox(), ["claude_cli", "openai_compat"]))
-        v.addWidget(backend_box)
+        backend = QGroupBox("Backend")
+        bf = QFormLayout(backend)
+        _row(bf, "Backend",
+             self._bind_combo(f"{section}.backend", QComboBox(), ["claude_cli", "openai_compat"]))
+        v.addWidget(backend)
 
-        cli_box = QGroupBox("claude -p (CLI)")
-        cf = QFormLayout(cli_box)
+        cli = QGroupBox("claude -p (CLI)")
+        cf = QFormLayout(cli)
         _row(cf, "Binary", self._bind_text(f"{section}.claude_cli.binary", QLineEdit()))
         timeout = QSpinBox(); timeout.setRange(10, 24 * 3600)
         _row(cf, "Timeout (s)", self._bind_int(f"{section}.claude_cli.timeout_seconds", timeout))
@@ -109,10 +123,10 @@ class SettingsDialog(QDialog):
         self._bindings.append((f"{section}.claude_cli.extra_args",
                                lambda e=extra: [x for x in e.text().split() if x]))
         _row(cf, "Extra args", extra)
-        v.addWidget(cli_box)
+        v.addWidget(cli)
 
-        api_box = QGroupBox("OpenAI-compatible API")
-        af = QFormLayout(api_box)
+        api = QGroupBox("OpenAI-compatible API")
+        af = QFormLayout(api)
         _row(af, "Base URL", self._bind_text(f"{section}.openai_compat.base_url", QLineEdit()))
         _row(af, "Model", self._bind_text(f"{section}.openai_compat.model", QLineEdit()))
         key = QLineEdit(); key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -121,7 +135,7 @@ class SettingsDialog(QDialog):
         if section == "llm":
             temp = QDoubleSpinBox(); temp.setRange(0.0, 2.0); temp.setSingleStep(0.1)
             _row(af, "Temperature", self._bind_float(f"{section}.openai_compat.temperature", temp))
-        v.addWidget(api_box)
+        v.addWidget(api)
         v.addStretch(1)
         return w
 
@@ -211,13 +225,12 @@ class SettingsDialog(QDialog):
     def _build_git_tab(self) -> QWidget:
         w = QWidget(); v = QVBoxLayout(w)
         v.addWidget(QLabel("Scan roots (one per line):"))
-        from PyQt6.QtWidgets import QPlainTextEdit
         roots = QPlainTextEdit()
         roots.setPlainText("\n".join(self.cfg.get("git.scan_roots") or []))
         self._bindings.append(("git.scan_roots",
                                lambda r=roots: [ln.strip() for ln in r.toPlainText().splitlines() if ln.strip()]))
         v.addWidget(roots, 1)
-        v.addWidget(QLabel("Hosts are edited directly in config.yaml (kind/base_url/token_env)."))
+        v.addWidget(QLabel("Hosts (kind / base_url / token_env) are edited in config.yaml directly."))
         return w
 
     # ------------------------------------------------------------------
@@ -226,11 +239,16 @@ class SettingsDialog(QDialog):
             for key, getter in self._bindings:
                 self.cfg.set(key, getter())
             self.cfg.save()
-            # Rebuild LLM in case backend changed.
             from ..core.llm import build_llm
             self.assistant.llm = build_llm(self.cfg, "llm")
             if self.assistant.scheduler:
                 self.assistant.scheduler.reload()
-            self.accept()
+            QMessageBox.information(self, "Saved", "Settings saved.")
         except Exception as e:                                 # noqa: BLE001
             QMessageBox.critical(self, "Save failed", str(e))
+
+    def _reload(self) -> None:
+        from ..core.config import load_config
+        self.assistant.config = load_config(str(self.cfg.path))
+        QMessageBox.information(self, "Reloaded",
+                                "Settings reloaded from disk. Close and reopen the panel to refresh fields.")
